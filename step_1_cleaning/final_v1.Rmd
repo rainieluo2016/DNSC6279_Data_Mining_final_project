@@ -1,0 +1,414 @@
+---
+title: "DNSC 6279 Final Project Midway Report  - Toxic Comment Classification"
+author: "Yu Luo, Ting Huang, Dewei Liu"
+date: "3/20/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,eval = FALSE, warning = FALSE)
+knitr::opts_chunk$set(cache =TRUE)
+options(width=80)
+load(file = "G:/GWU/2021Spring/DNSC_6279/final project/project_code/knit_ver.RData")
+```
+
+
+library needed
+ 
+```{r eval = TRUE}
+library(dplyr)
+library(qdap)
+library(devtools)
+library(tidyverse)
+library(SnowballC)
+library(hunspell)
+library(ggplot2)
+library(tm)
+```
+
+
+# Abstract: 
+
++ id - userid
++ comment_text - a large number of Wikipedia comments
++ toxic
++ severe_toxic
++ obscene
++ threat
++ insult
++ identity_hate
+
+This data set contains 6 different types of toxicity. From the direct view of the data set, we could see that these 6 types are not mutually exclusive. Therefore, instead of consider this project as one classification with 6 classes, we could treat it as 6 classifications, each with only two classes {0,1} which 0 represents Not and 1 represents Yes.
+
+# Preparation
+
+## 1. Import Dataset
+
+The original kaggle contest include 4 different files:
+
++ train.csv - the training set, contains comments with their binary labels
++ test.csv - the test set, you must predict the toxicity probabilities for these comments. To deter hand labeling, the test set contains some comments which are not included in scoring.
++ test_labels.csv - labels for the test data; value of -1 indicates it was not used for scoring; (Note: file added after competition close!)
++ sample_submission.csv - a sample submission file in the correct format
+
+Out of research purpose, we will only use the first three as our data source.
+
++ test_path
+
+<https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/test.csv>
+
++ train_path
+
+<https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/train.csv>
+
++ test_labels_path
+
+<https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/test_labels.csv>
+
+```{r data_import, include = FALSE}
+# path for each file
+test_path = 'https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/test.csv'
+train_path = 'https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/train.csv'
+test_labels_path = 'https://raw.githubusercontent.com/rainieluo2016/DNSC6279_Data_Mining_final_project/master/test_labels.csv'
+```
+
+```{r}
+# get csv file from those address
+test = read.csv(test_path)
+train = read.csv(train_path)
+test_labels = read.csv(test_labels_path)
+
+
+
+```
+
+## 2. Data Preview
+```{r}
+### Data visualization of the distribution of different classes on training set
+
+#Remove unnecessary columns - 'id' and 'comment_text'
+train_classes = train[,c(3:8)]
+
+class_sum = data.frame(toxic = sum(train_classes$toxic, na.rm = TRUE),
+                     severe_toxic = sum(train_classes$severe_toxic, na.rm = TRUE),
+                     obscene = sum(train_classes$obscene, na.rm = TRUE),
+                     threat = sum(train_classes$threat, na.rm = TRUE),
+                     insult = sum(train_classes$insult, na.rm = TRUE),
+                     identity_hate = sum(train_classes$identity_hate, na.rm = TRUE))
+class_sum
+```
+
+ We then visualise the total count in each class into graph.
+
+```{r eval = TRUE}
+class_sum %>% 
+  gather(key=Classes, value=Counts) %>% 
+  ggplot(aes(x=Classes, y=Counts, fill=Classes))+ 
+  labs(x = "Classes",
+       y = "Counts") +  
+  geom_col()
+```
+
+
+
+## 3. Data Cleaning
+
+### a. Remove uncessary rows from test and test_labels
+
+Based on the description on Kaggle, in order to prevent malpractice, many observations in the 'test_labels.csv' file are scored as -1. So for the convenience of further prediction and comparing model accuracy, we would like to remove those rows from both test and test_labels.
+```{r clean_test}
+test_labels.clean = test_labels[test_labels$toxic != -1,]
+test.clean = test[test_labels$toxic != -1,]
+```
+
+
+### b. Check for unknown value in train
+
+There is no missing text in this dataset.
+
+```{r eval = TRUE}
+sum(is.null(train$comment_text))
+sum(is.null(test.clean$comment_text))
+```
+
+### c. remove url
+
+We noticed that there are many url that are not important to predict toxic class, removing those will give us a better data set.
+
+```{r}
+train$commentv1 = train$comment_text %>% gsub('http\\S+\\s','',.)
+test.clean$comment_textv1 = test.clean$comment_text %>% gsub('http\\S+\\s','',.)
+```
+
+Check result:
+
+```{r eval = TRUE}
+print(train$comment_text[189])
+print(train$commentv1[189])
+```
+
+
+### d. replace contradiction
+```{r}
+train$commentv2 = replace_contraction(train$commentv1)
+test.clean$comment_textv2 = replace_contraction(test.clean$comment_textv1)
+```
+
+Check result:
+
+```{r eval = TRUE}
+print(train$commentv1[4])
+print(train$commentv2[4])
+```
+
+### e. keep only alphabet
+
+remove other language, number and punctuation
+```{r}
+train$commentv3 = train$commentv2 %>% gsub('[^A-Za-z]',' ',.)
+test.clean$commentv3 = test.clean$comment_textv2 %>% gsub('[^A-Za-z]',' ',.)
+```
+
+Check result:
+
+```{r eval = TRUE}
+print(train$commentv2[71])
+print(train$commentv3[71])
+```
+
+Entry containing language other than English will be cleaned.
+
+### e. Remove whitespace and change to lower
+
+Some words with upper case will be counted as a different word so we need to avoid this by converting everything to lowercase.
+
+<test set not changed yet>
+
+```{r}
+train$commentv4 = train$commentv3 %>% tolower() %>% 
+  strsplit(., "[[:space:]]+")
+test.clean$commentv4 = test.clean$commentv3 %>% tolower() %>% 
+  strsplit(., "[[:space:]]+")
+```
+
+```{r}
+corpus  = VCorpus(VectorSource(tolower(train$commentv3)))
+corpus = tm_map(corpus, stripWhitespace)
+```
+
+Check result:
+
+```{r eval = TRUE}
+print(train$commentv3[71])
+print(train$commentv4[71])
+```
+
+
+
+
+### g. remove stopwords
+
+<test set not changed yet>
+
+```{r}
+train$commentv5 = rm_stopwords(train$commentv4)
+test.clean$commentv5 = rm_stopwords(test.clean$commentv4)
+```
+
+```{r}
+corpus = tm_map(corpus, removeWords, stopwords())
+```
+
+Check result:
+
+```{r eval = TRUE}
+print(train$commentv4[71])
+print(train$commentv5[71])
+```
+
+
+
+### g. Stemming and Vectorize
+
+<test set not changed yet>
+
+```{r}
+corpus = tm_map(corpus,stemDocument)
+```
+
+### h. Tfidf
+
+<test set not changed yet>
+
+<introduce>
+
+Parameter setting:
+
++ bounds - at least 5 times appeared in the global
++ wordLengths - default at c(3,Inf), a minimum word length of 3 character
+
+```{r}
+dtm = DocumentTermMatrix(corpus,
+                         control = list(weighting = function(x)
+                           weightTfIdf(x, normalize = FALSE),
+                           bounds = list(global = c(5, Inf))))
+```
+
+
+```{r eval = TRUE}
+cat('Our train dataset has ', nrow(train), 'rows')
+cat('Our TF-IDF matrix also has', dtm$nrow, 'rows')
+```
+
+In this way, we ensure the credibility of our TF-IDF dataset. 
+
+```{r eval = TRUE}
+dtm
+```
+
+Also, from the above, we could see that since the vector contains many 0, it is called a spare-matrix. The detail shows that the sparsity of this matrix is almost 100%. We therefore have to shrink the matrix as much as possible. Otherwise, our computer will not be able to process such a large vector. 
+
+
+```{r}
+dtm = removeSparseTerms(dtm, 0.99)
+train_new = as.data.frame(as.matrix(dtm))
+```
+ 
+
+```{r}
+# add id for train_new and export as csv
+train_new$id = train$id
+location = getwd()
+write.csv(train_new, 'train_new.csv')
+```
+
+
+
+
+## 4. New features
+
+
+```{r}
+train$toxic = as.factor(train$toxic)
+train$severe_toxic = as.factor(train$severe_toxic)
+train$obscene = as.factor(train$obscene)
+train$threat = as.factor(train$threat)
+train$insult = as.factor(train$insult)
+train$identity_hate = as.factor(train$identity_hate)
+train$length = train$comment_text %>% str_length()
+```
+
+
+### a.String length
+
+```{r eval = TRUE}
+par(mfrow=c(2,3))
+ggplot(train, aes(length, 
+                        group = toxic,
+                        fill = toxic)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(length, 
+                        group = severe_toxic,
+                        fill = severe_toxic)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(length, 
+                        group = obscene,
+                        fill = obscene)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(length, 
+                        group = threat,
+                        fill = threat)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(length, 
+                        group = insult,
+                        fill = insult)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(length, 
+                        group = identity_hate,
+                        fill = identity_hate)) + 
+    geom_histogram(bins = 10)
+```
+
+We could see length of the string seems to have the same distribution for both whether or not it is toxic in all conditions. 
+
+It is hard to visualize from the histogram. We might want to change the way to conclude whether we want to include this variable or not.
+
+### b.% of capital letters in the string
+
+```{r}
+train$percentage_capital = str_count(train$comment_text, 
+                                     '[A-Z]')/train$length * 100
+```
+
+```{r eval = TRUE}
+par(mfrow = c(2,3))
+ggplot(train, aes(percentage_capital, 
+                        group = toxic,
+                        fill = toxic)) + 
+    geom_histogram(bins = 10)
+
+ggplot(train, aes(percentage_capital, 
+                        group = severe_toxic,
+                        fill = severe_toxic)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(percentage_capital, 
+                        group = obscene,
+                        fill = obscene)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(percentage_capital, 
+                        group = threat,
+                        fill = threat)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(percentage_capital, 
+                        group = insult,
+                        fill = insult)) + 
+    geom_histogram(bins = 10)
+ggplot(train, aes(percentage_capital, 
+                        group = identity_hate,
+                        fill = identity_hate)) + 
+    geom_histogram(bins = 10)
+```
+
+We could see % of capital seems to have the same distribution for both whether or not it is toxic in all 6 conditions. 
+
+Similarly as the previous case, it is hard to visualize from the histogram. We might want to change the way to conclude whether we want to include this variable or not.
+
+
+## 5. Dig into each toxication
+
+Word cloud for strings classified as toxic, severe_toxic, obscene, threat, insult, identity_hate
+
+# Model and Analysis:
+
+## 1. Preparation - Imbalance
+
+```{r eval = TRUE}
+### Percentage count in each class
+class_sum %>%
+  gather(key=Classes, value = Counts) %>% 
+  mutate(perc = Counts/nrow(train_classes)) %>% 
+  ggplot(aes(x=Classes, y= perc*100, fill=Classes))+
+  labs(x = "Classes",
+       y = "Percentage")+
+  geom_col()
+```
+
+We could see that those classes are all considered as minority which will lead to the imbalance problem.
+
+There are several ways of dealing with this problem:
+
++ Anomaly/ Change detection
++ Penalized Model (eg: penalized-SVM )
++ Synthetic samples - SMOTE
++ Over/Under - sampling (ROSE)
+
+## 2. Model
+
+### a. Model selection
+
+### b.Tuning hyperparameters
+
+## 3. Comparison and result
+
